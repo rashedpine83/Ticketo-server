@@ -27,8 +27,9 @@ async function run() {
     const database = client.db("ticketoDb");
     const organizationsCollection = database.collection("organizations");
     const eventsCollection = database.collection("events");
-    const bookingsCollection = database.collection("bookings");
-    const paymentsCollection = database.collection("payments");
+    const usersCollection = database.collection("user");
+    const bookingCollection = database.collection("bookings");
+    const paymentCollection = database.collection("payments");
 
     app.get("/api/organizations/:email", async (req, res) => {
       try {
@@ -84,6 +85,42 @@ async function run() {
       res.send(result);
     });
 
+    //===========EVENT RELATED API====================
+
+    app.get("/api/events", async (req, res) => {
+      const search = req.query.search;
+      const category = req.query.category;
+      const location = req.query.location;
+      const query = {}; // {title: "mern"}
+      if (search) {
+        query.title = {
+          $regex: search,
+          $options: "i", // upper lower matter korbe na
+        };
+      }
+      if (category) {
+        // query.category = category;
+        // ?category=Music,Tech,Digial
+        // console.log(category, category.split(',')); ["Music", "Tech", "Digital"]
+
+        query.category = { $in: category.split(",") };
+      }
+      if (location) {
+        query.location = location;
+      }
+
+      const cursor = eventsCollection.find(query);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    app.get("/api/single-events/:id", async (req, res) => {
+      const { id } = req.params;
+      const query = { _id: new ObjectId(id) };
+      const result = await eventsCollection.findOne(query);
+      res.send(result);
+    });
+
     app.get("/api/events/:email", async (req, res) => {
       try {
         const { email } = req.params;
@@ -100,11 +137,83 @@ async function run() {
       }
     });
 
+    app.get("/api/events/booking/:email", async (req, res) => {
+      const { email } = req.params;
+      const query = { attendeeEmail: email };
+      const result = await bookingCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // payment Api
+
+    app.post("/api/events/booking", async (req, res) => {
+      const {
+        amount,
+        evetId,
+        eventTitle,
+        quantity,
+        email,
+        paymentType,
+        transactionId,
+        paymentStatus,
+      } = req.body;
+      // console.log(req.body);
+      const bookingData = {
+        evetId,
+        eventTitle,
+        attendeeEmail: email,
+        quantity,
+        amount,
+        transactionId,
+        paymentStatus,
+        bookingDate: new Date(),
+      };
+      const isBookingExist = await bookingCollection.findOne({
+        transactionId,
+      });
+      if (isBookingExist) {
+        return res.status(200).send({ message: "Already paid" });
+      }
+      const bookingRes = await bookingCollection.insertOne(bookingData);
+
+      await eventsCollection.updateOne(
+        { _id: new ObjectId(evetId) },
+        {
+          $inc: {
+            capacity: -quantity,
+          },
+        },
+      );
+      const paymentData = {
+        userEmail: email,
+        amount,
+        transactionId,
+        paymentStatus,
+        paymentType,
+        paidAt: new Date(),
+      };
+
+      await paymentCollection.insertOne(paymentData);
+      res.send(bookingRes);
+    });
+
     app.post("/api/events", async (req, res) => {
       const data = req.body;
+      const organizer = await usersCollection.findOne({
+        email: data?.organizationEmail,
+      });
+      const organizerEventsCounts = await eventsCollection.countDocuments({
+        organizationEmail: data?.organizationEmail,
+      });
 
+      if (!organizer?.isPremium && organizerEventsCounts >= 3) {
+        return res.status(401).send({
+          message: "Your free limit is over",
+        });
+      }
       const result = await eventsCollection.insertOne({
         ...data,
+        status: "pending",
         createdAt: new Date(),
       });
       res.send(result);
@@ -130,6 +239,39 @@ async function run() {
       const result = await eventsCollection.deleteOne({
         _id: new ObjectId(id),
       });
+      res.send(result);
+    });
+
+    app.patch("/api/users/upgrade-premium/:email", async (req, res) => {
+      const { email } = req.params;
+      const { amount, transactionId, paymentStatus, paymentType } = req.body;
+
+      const result = await usersCollection.updateOne(
+        { email },
+        {
+          $set: {
+            isPremium: true,
+          },
+        },
+      );
+      const paymentData = {
+        userEmail: email,
+        amount,
+        transactionId,
+        paymentStatus,
+        paymentType,
+        paidAt: new Date(),
+      };
+
+      await paymentCollection.insertOne(paymentData);
+
+      res.send(result);
+    });
+
+    app.get("/api/payment/:email", async (req, res) => {
+      const { email } = req.params;
+      const query = { userEmail: email };
+      const result = await paymentCollection.find(query).toArray();
       res.send(result);
     });
 
